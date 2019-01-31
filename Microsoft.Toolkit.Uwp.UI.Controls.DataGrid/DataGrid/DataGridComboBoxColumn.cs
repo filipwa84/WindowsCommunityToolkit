@@ -6,6 +6,7 @@ using System;
 using System.Collections;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using Microsoft.Toolkit.Uwp.UI.Controls.DataGridInternals;
@@ -639,7 +640,7 @@ namespace Microsoft.Toolkit.Uwp.UI.Controls
         {
             var propertyPathParts = Binding.Path.Path.Split('.');
 
-            if (propertyPathParts.Length < 2)
+            if (propertyPathParts.Length == 1)
             {
                 dataItem.GetType().GetProperty(Binding.Path.Path).SetValue(dataItem, newValue);
             }
