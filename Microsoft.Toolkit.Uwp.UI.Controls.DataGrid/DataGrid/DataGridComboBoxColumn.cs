@@ -7,6 +7,7 @@ using System.Collections;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq;
+using System.Reflection;
 using Microsoft.Toolkit.Uwp.UI.Controls.DataGridInternals;
 using Microsoft.Toolkit.Uwp.UI.Utilities;
 using Windows.UI.Text;
@@ -214,10 +215,10 @@ namespace Microsoft.Toolkit.Uwp.UI.Controls
 
             if (dataItem != null)
             {
-                var value = dataItem.GetType().GetProperty(Binding.Path.Path).GetValue(dataItem);
+                var value = this.GetDataItemProperty(dataItem);
 
                var selection = !string.IsNullOrEmpty(DisplayMemberPath)
-                    ? ItemsSource?.Cast<object>().FirstOrDefault(x => x.GetType().GetProperty(Binding.Path.Path).GetValue(x).Equals(value))
+                    ? ItemsSource?.Cast<object>().FirstOrDefault(x => this.GetDataItemProperty(x).Equals(value))
                     : ItemsSource?.Cast<object>().FirstOrDefault(x => x.Equals(value));
 
                 comboBox.SelectedItem = selection;
@@ -267,18 +268,18 @@ namespace Microsoft.Toolkit.Uwp.UI.Controls
                 if (item != null)
                 {
                     var newValue = !string.IsNullOrEmpty(DisplayMemberPath)
-                        ? item.GetType().GetProperty(Binding.Path.Path).GetValue(item)
+                        ? this.GetDataItemProperty(item)
                         : item;
 
                     if (dataItem != null)
                     {
-                        dataItem.GetType().GetProperty(Binding.Path.Path).SetValue(dataItem, newValue);
+                        this.SetDataItemProperty(dataItem, newValue);
                     }
                     else
                     {
                         var dataType = OwningGrid.ItemsSource.GetItemType();
                         var newDataItem = Activator.CreateInstance(dataType);
-                        dataType.GetProperty(Binding.Path.Path).SetValue(newDataItem, newValue);
+                        this.SetDataItemProperty(newDataItem, newValue);
                         dataItem = newDataItem;
                     }
                 }
@@ -352,8 +353,8 @@ namespace Microsoft.Toolkit.Uwp.UI.Controls
             var comboBox = editingElement as ComboBox;
             if (comboBox != null && uneditedValue != null)
             {
-                var value = uneditedValue.GetType().GetProperty(Binding.Path.Path).GetValue(uneditedValue);
-                var selection = ItemsSource?.Cast<object>().FirstOrDefault(x => x.GetType().GetProperty(Binding.Path.Path).GetValue(x).Equals(value));
+                var value = GetDataItemProperty(uneditedValue);
+                var selection = ItemsSource?.Cast<object>().FirstOrDefault(x => GetDataItemProperty(uneditedValue).Equals(value));
 
                 comboBox.SelectedItem = selection;
             }
@@ -482,6 +483,128 @@ namespace Microsoft.Toolkit.Uwp.UI.Controls
             }
         }
 
+        private void Columns_CollectionChanged(object sender, NotifyCollectionChangedEventArgs e)
+        {
+            if (OwningGrid == null && _owningGrid != null)
+            {
+                _owningGrid.Columns.CollectionChanged -= new NotifyCollectionChangedEventHandler(Columns_CollectionChanged);
+                _owningGrid.LoadingRow -= OwningGrid_LoadingRow;
+                _owningGrid.CellEditEnded -= OwningGrid_CellEditEnded;
+                _owningGrid = null;
+            }
+        }
+
+        private void EnsureColumnBinding(object dataItem)
+        {
+            if (Binding?.Path == null)
+            {
+                if (!string.IsNullOrEmpty(Header as string))
+                {
+                    throw DataGridError.DataGridComboBoxColumn.UnsetBinding(Header as string);
+                }
+
+                throw DataGridError.DataGridComboBoxColumn.UnsetBinding(GetType());
+            }
+
+            if (!string.IsNullOrEmpty(Binding.Path.Path))
+            {
+                var propertyPathParts = Binding.Path.Path.Split('.');
+                var partialItem = dataItem;
+                foreach (var propertyPathPart in propertyPathParts)
+                {
+                    if (!partialItem?.GetType().GetProperties().Any(x => x.Name.Equals(propertyPathPart)) ?? false)
+                    {
+                        throw DataGridError.DataGridComboBoxColumn.UnknownBindingPath(Binding, dataItem.GetType());
+                    }
+
+                    partialItem = partialItem?.GetType().GetProperty(propertyPathPart).GetValue(partialItem);
+                }
+            }
+        }
+
+        private void EnsureDisplayMemberPathExists()
+        {
+            if (!string.IsNullOrEmpty(DisplayMemberPath))
+            {
+                var type = ItemsSource?.GetItemType();
+
+                if (ItemsSource != null && !type.GetProperties().Any(x => x.Name.Equals(DisplayMemberPath)))
+                {
+                    throw DataGridError.DataGridComboBoxColumn.UnknownDisplayMemberPath(DisplayMemberPath, type);
+                }
+            }
+        }
+
+        private void EnsureItemsSourceBinding()
+        {
+            if (!string.IsNullOrEmpty(DisplayMemberPath) && ItemsSource != null)
+            {
+                var item = ItemsSource.Cast<object>().FirstOrDefault();
+
+                if (item != null && !item.GetType().GetProperties().Any(y => y.Name.Equals(Binding.Path.Path)))
+                {
+                    throw DataGridError.DataGridComboBoxColumn.UnknownItemsSourcePath(Binding);
+                }
+            }
+        }
+
+        private bool EnsureOwningGrid()
+        {
+            if (OwningGrid != null)
+            {
+                if (OwningGrid != _owningGrid)
+                {
+                    _owningGrid = OwningGrid;
+                    _owningGrid.Columns.CollectionChanged += new NotifyCollectionChangedEventHandler(Columns_CollectionChanged);
+                    _owningGrid.LoadingRow += OwningGrid_LoadingRow;
+                    _owningGrid.CellEditEnded += OwningGrid_CellEditEnded;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        private object GetDataItemProperty(object dataItem)
+        {
+            var propertyPathParts = Binding.Path.Path.Split('.');
+            var itemValue = dataItem;
+
+            foreach (var propertyPathPart in propertyPathParts)
+            {
+                itemValue = itemValue?.GetType().GetProperty(propertyPathPart).GetValue(itemValue);
+            }
+
+            return itemValue;
+        }
+
+        private string GetDisplayValue(object dataItem)
+        {
+            if (Binding?.Path != null && dataItem != null)
+            {
+                var value = this.GetDataItemProperty(dataItem);
+
+                var item = ItemsSource?.Cast<object>().FirstOrDefault(x => this.GetDataItemProperty(x).Equals(value));
+
+                var displayValue = item?.GetType().GetProperty(DisplayMemberPath).GetValue(item) ?? string.Empty;
+
+                return displayValue as string ?? displayValue.ToString();
+            }
+
+            return string.Empty;
+        }
+
+        private void OwningGrid_CellEditEnded(object sender, DataGridCellEditEndedEventArgs e)
+        {
+            SetDisplayMemberPathValue(e.Row);
+        }
+
+        private void OwningGrid_LoadingRow(object sender, DataGridRowEventArgs e)
+        {
+            SetDisplayMemberPathValue(e.Row);
+        }
+
         private void RefreshForeground(ComboBox comboBox, Brush computedRowForeground)
         {
             if (Foreground == null)
@@ -512,55 +635,34 @@ namespace Microsoft.Toolkit.Uwp.UI.Controls
             }
         }
 
-        private void SetTextFontSize(DependencyObject textElement, DependencyProperty fontSizeProperty)
+        private void SetDataItemProperty(object dataItem, object newValue)
         {
-            double newFontSize = FontSize;
-            if (double.IsNaN(newFontSize))
+            var propertyPathParts = Binding.Path.Path.Split('.');
+
+            if (propertyPathParts.Length < 2)
             {
-                textElement.ClearValue(fontSizeProperty);
+                dataItem.GetType().GetProperty(Binding.Path.Path).SetValue(dataItem, newValue);
             }
             else
             {
-                textElement.SetValue(fontSizeProperty, newFontSize);
-            }
-        }
+                var lastItem = dataItem;
+                var lastProperty = dataItem.GetType().GetProperty(propertyPathParts[0]);
 
-        private bool EnsureOwningGrid()
-        {
-            if (OwningGrid != null)
-            {
-                if (OwningGrid != _owningGrid)
+                object nextToLastItem = null;
+
+                for (var i = 0; i < propertyPathParts.Length; i++)
                 {
-                    _owningGrid = OwningGrid;
-                    _owningGrid.Columns.CollectionChanged += new NotifyCollectionChangedEventHandler(Columns_CollectionChanged);
-                    _owningGrid.LoadingRow += OwningGrid_LoadingRow;
-                    _owningGrid.CellEditEnded += OwningGrid_CellEditEnded;
+                    lastProperty = lastItem?.GetType().GetProperty(propertyPathParts[i]);
+
+                    if (i == propertyPathParts.Length - 2)
+                    {
+                        nextToLastItem = lastProperty?.GetValue(lastItem);
+                    }
+
+                    lastItem = lastProperty?.GetValue(lastItem);
                 }
 
-                return true;
-            }
-
-            return false;
-        }
-
-        private void OwningGrid_LoadingRow(object sender, DataGridRowEventArgs e)
-        {
-            SetDisplayMemberPathValue(e.Row);
-        }
-
-        private void OwningGrid_CellEditEnded(object sender, DataGridCellEditEndedEventArgs e)
-        {
-            SetDisplayMemberPathValue(e.Row);
-        }
-
-        private void Columns_CollectionChanged(object sender, NotifyCollectionChangedEventArgs e)
-        {
-            if (OwningGrid == null && _owningGrid != null)
-            {
-                _owningGrid.Columns.CollectionChanged -= new NotifyCollectionChangedEventHandler(Columns_CollectionChanged);
-                _owningGrid.LoadingRow -= OwningGrid_LoadingRow;
-                _owningGrid.CellEditEnded -= OwningGrid_CellEditEnded;
-                _owningGrid = null;
+                lastProperty?.SetValue(nextToLastItem, newValue);
             }
         }
 
@@ -578,63 +680,16 @@ namespace Microsoft.Toolkit.Uwp.UI.Controls
             }
         }
 
-        private string GetDisplayValue(object dataItem)
+        private void SetTextFontSize(DependencyObject textElement, DependencyProperty fontSizeProperty)
         {
-            if (Binding?.Path != null && dataItem != null)
+            double newFontSize = FontSize;
+            if (double.IsNaN(newFontSize))
             {
-                var value = dataItem.GetType().GetProperty(Binding.Path.Path).GetValue(dataItem);
-
-                var item = ItemsSource?.Cast<object>().FirstOrDefault(x => x.GetType().GetProperty(Binding.Path.Path).GetValue(x).Equals(value));
-
-                var displayValue = item?.GetType().GetProperty(DisplayMemberPath).GetValue(item) ?? string.Empty;
-
-                return displayValue as string ?? displayValue.ToString();
+                textElement.ClearValue(fontSizeProperty);
             }
-
-            return string.Empty;
-        }
-
-        private void EnsureColumnBinding(object dataItem)
-        {
-            if (Binding?.Path == null)
+            else
             {
-                if (!string.IsNullOrEmpty(Header as string))
-                {
-                    throw DataGridError.DataGridComboBoxColumn.UnsetBinding(Header as string);
-                }
-
-                throw DataGridError.DataGridComboBoxColumn.UnsetBinding(GetType());
-            }
-
-            if (!dataItem?.GetType().GetProperties().Any(x => x.Name.Equals(Binding.Path.Path)) ?? false)
-            {
-                throw DataGridError.DataGridComboBoxColumn.UnknownBindingPath(Binding, dataItem.GetType());
-            }
-        }
-
-        private void EnsureDisplayMemberPathExists()
-        {
-            if (!string.IsNullOrEmpty(DisplayMemberPath))
-            {
-                var type = ItemsSource?.GetItemType();
-
-                if (ItemsSource != null && !type.GetProperties().Any(x => x.Name.Equals(DisplayMemberPath)))
-                {
-                    throw DataGridError.DataGridComboBoxColumn.UnknownDisplayMemberPath(DisplayMemberPath, type);
-                }
-            }
-        }
-
-        private void EnsureItemsSourceBinding()
-        {
-            if (!string.IsNullOrEmpty(DisplayMemberPath) && ItemsSource != null)
-            {
-                var item = ItemsSource.Cast<object>().FirstOrDefault();
-
-                if (item != null && !item.GetType().GetProperties().Any(y => y.Name.Equals(Binding.Path.Path)))
-                {
-                    throw DataGridError.DataGridComboBoxColumn.UnknownItemsSourcePath(Binding);
-                }
+                textElement.SetValue(fontSizeProperty, newFontSize);
             }
         }
     }
